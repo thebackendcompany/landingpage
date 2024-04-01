@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"embed"
 	"encoding/base64"
@@ -8,6 +9,8 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os/signal"
+	"syscall"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
@@ -34,15 +37,18 @@ func main() {
 	baseLayout := template.Must(template.New("layout").ParseFS(indexHtmlFs, "static/index.html"))
 
 	r := gin.Default()
+	r.SetHTMLTemplate(baseLayout)
+
+	r.StaticFS("/_next", http.FS(distFS))
 
 	store := cookie.NewStore([]byte("secret"))
 	r.Use(sessions.Sessions("mysession", store))
 
-	r.StaticFS("/_next", http.FS(distFS))
-	r.SetHTMLTemplate(baseLayout)
-
 	r.GET("/", func(ctx *gin.Context) {
+		session := sessions.Default(ctx)
 		csrfToken := generateCSRFToken()
+
+		session.Set("csrfToken", csrfToken)
 
 		ctx.HTML(http.StatusOK, "index.html", gin.H{
 			"csrf_token": csrfToken,
@@ -65,26 +71,51 @@ func main() {
 		)
 	})
 
-	r.POST("/transaction", func(c *gin.Context) {
-		session := sessions.Default(c)
-		publicKey := c.GetHeader("Authorization")
-		csrfToken := session.Get("csrfToken")
+	// r.POST("/transaction", func(c *gin.Context) {
+	// 	session := sessions.Default(c)
+	// 	publicKey := c.GetHeader("Authorization")
+	// 	csrfToken := session.Get("csrfToken")
+	//
+	// 	if publicKey != "" && csrfToken != nil && c.GetHeader("X-CSRF-Token") == csrfToken {
+	// 		// process the transaction
+	// 	} else {
+	// 		c.JSON(http.StatusUnauthorized, gin.H{"status": "unauthorized"})
+	// 	}
+	// })
+	//
+	// r.GET("/login", func(c *gin.Context) {
+	// 	session := sessions.Default(c)
+	// 	csrfToken := generateCSRFToken()
+	// 	session.Set("csrfToken", csrfToken)
+	// 	session.Save()
+	// })
 
-		if publicKey != "" && csrfToken != nil && c.GetHeader("X-CSRF-Token") == csrfToken {
-			// process the transaction
-		} else {
-			c.JSON(http.StatusUnauthorized, gin.H{"status": "unauthorized"})
+	srv := &http.Server{
+		Addr:    ":8080",
+		Handler: r,
+	}
+
+	go func() {
+		// service connections
+		log.Println("starting server at port", ":8080")
+
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("listen: %s\n", err)
 		}
-	})
+	}()
 
-	r.GET("/login", func(c *gin.Context) {
-		session := sessions.Default(c)
-		csrfToken := generateCSRFToken()
-		session.Set("csrfToken", csrfToken)
-		session.Save()
-	})
+	ctx := context.Background()
 
-	r.Run()
+	appCtx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+
+	<-appCtx.Done()
+
+	if err := srv.Shutdown(appCtx); err != nil {
+		log.Fatal("Server Shutdown:", err)
+	}
+
+	log.Println("Server exiting")
 }
 
 func generateCSRFToken() string {

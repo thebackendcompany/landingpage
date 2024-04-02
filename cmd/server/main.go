@@ -2,10 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"embed"
-	"encoding/base64"
-	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -15,10 +12,13 @@ import (
 	"syscall"
 	"thebackendcompany/app/web/emailleads"
 	"thebackendcompany/pkg/config"
+	"thebackendcompany/pkg/limiters"
+	"time"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
+	"golang.org/x/time/rate"
 
 	coreleads "thebackendcompany/app/core/emailleads"
 
@@ -32,7 +32,7 @@ func RunMigrations(db *sqlx.DB) {
 }
 
 var (
-	//go:embed static/index.html
+	//go:embed static/*.html
 	indexHtmlFs embed.FS
 
 	//go:embed static/favicon.ico
@@ -85,13 +85,16 @@ func main() {
 
 	sessionKey := os.Getenv("SESSION_SECRET")
 	if sessionKey == "" {
-		sessionKey = generateToken(64)
+		sessionKey = emailleads.GenerateToken(64)
 	}
 
 	emailLeadsSvc := coreleads.NewEmailLeadsSheets(
 		[]byte(cfg.GoogleCreds),
 		cfg.EmailLeadsDbName,
 	)
+
+	// 2 request, every 10 seconds
+	csrfLimiter := limiters.NewSessionLimiter(rate.Every(10*time.Minute), 2, 15*time.Minute)
 
 	store := cookie.NewStore([]byte(sessionKey))
 	shouldSecure := true
@@ -104,36 +107,15 @@ func main() {
 		HttpOnly: true,
 		Secure:   shouldSecure,
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   6000,
+		MaxAge:   1200,
 		Domain:   cfg.DomainName,
 	})
 
+	leadsHandler := emailleads.NewEmailLeadsHandler(emailLeadsSvc, csrfLimiter)
+
 	r.Use(sessions.Sessions("thebackendcompany", store))
 
-	r.GET("/", func(ctx *gin.Context) {
-		session := sessions.Default(ctx)
-
-		maskedToken := session.Get("csrfToken")
-		fmt.Println("dsfdsfdsfsdf ", maskedToken)
-
-		var csrfToken string
-		if maskedToken == nil {
-			csrfToken = generateToken(32)
-
-			session.Set("csrfToken", csrfToken)
-			if err := session.Save(); err != nil {
-				fmt.Println("session save error ", err)
-			}
-		} else if _t, ok := maskedToken.(string); ok {
-			csrfToken = _t
-		} else {
-			log.Error().Msg("something went wrong trying to set csrf token. using blank")
-		}
-
-		ctx.HTML(http.StatusOK, "index.html", gin.H{
-			"csrf_token": csrfToken,
-		})
-	})
+	r.GET("/", leadsHandler.LandingHandleFunc)
 
 	r.GET("favicon.ico", func(ctx *gin.Context) {
 		file, err := nextFs.ReadFile("static/favicon.ico")
@@ -155,7 +137,7 @@ func main() {
 		c.String(http.StatusOK, "pong")
 	})
 
-	r.POST("/tbc/emails/leads", emailleads.NewEmailLeadsHandler(emailLeadsSvc).HandlerFunc)
+	r.POST("/tbc/emails/leads", leadsHandler.CreateLeadHandlerFunc)
 
 	srv := &http.Server{
 		Addr:    port,
@@ -183,10 +165,4 @@ func main() {
 	}
 
 	log.Info().Msg("Server exiting")
-}
-
-func generateToken(tokenLen int) string {
-	b := make([]byte, tokenLen)
-	rand.Read(b)
-	return base64.StdEncoding.EncodeToString(b)
 }

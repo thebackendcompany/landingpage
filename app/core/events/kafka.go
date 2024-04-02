@@ -11,6 +11,9 @@ import (
 	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
+type Event struct {
+}
+
 type KafkaConfig struct {
 	Servers      string
 	Topic        string
@@ -60,7 +63,7 @@ func (mq *EventsKafkaMq) PushEvent(ctx context.Context, evs ...*Event) error {
 		err = mq.producer.Produce(&kafka.Message{
 			TopicPartition: kafka.TopicPartition{
 				Topic:     &mq.topic,
-				Partition: kafka.PartitionAny,
+				Partition: kafka.PartitionAny, // check how to partition properly
 			},
 			Value:   value,
 			Headers: []kafka.Header{{Key: mq.key}},

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"thebackendcompany/pkg/creepto"
+
 	"github.com/go-batteries/diaper"
 	"github.com/rs/zerolog/log"
 )
@@ -12,6 +14,10 @@ type AppConfig struct {
 	UpstashURL      string
 	UpstashUserName string
 	UpstashPassword string
+
+	GoogleCreds      string
+	EmailLeadsDbName string
+	DomainName       string
 }
 
 func BuildAppConfig(env string) *AppConfig {
@@ -22,18 +28,30 @@ func BuildAppConfig(env string) *AppConfig {
 
 	cfgMap, err := dc.ReadFromFile(env, "./config/")
 	if err != nil {
-		// logrus.WithError(err).Fatal("failed to load config from .env")
-		log.Error().Err(err).Msg("failed to read config")
+		log.Fatal().Err(err).Msg("failed to read config")
 	}
 
 	cfg := &AppConfig{
-		Env:             env,
-		Port:            cfgMap.MustGetInt("port"),
-		LogLevel:        cfgMap.MustGet("log_level").(string),
-		UpstashURL:      cfgMap.MustGet("upstash_url").(string),
-		UpstashUserName: cfgMap.MustGet("upstash_username").(string),
-		UpstashPassword: cfgMap.MustGet("upstash_password").(string),
+		Env:              env,
+		Port:             cfgMap.MustGetInt("port"),
+		LogLevel:         cfgMap.MustGet("log_level").(string),
+		UpstashURL:       cfgMap.MustGet("upstash_url").(string),
+		UpstashUserName:  cfgMap.MustGet("upstash_username").(string),
+		UpstashPassword:  cfgMap.MustGet("upstash_password").(string),
+		EmailLeadsDbName: cfgMap.MustGet("email_leads_db_name").(string),
+		DomainName:       cfgMap.MustGet("domain_name").(string),
 	}
+
+	googleCredsFile := cfgMap.MustGet("google_creds_file").(string)
+	masterKey := cfgMap.MustGet("master_key").(string)
+
+	plainText, err := creepto.Decrypt(googleCredsFile, masterKey)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to decrypt creds file")
+	}
+
+	// add a validation to validate authenticity of file
+	cfg.GoogleCreds = plainText
 
 	return cfg
 }

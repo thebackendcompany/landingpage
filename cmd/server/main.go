@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"embed"
 	"encoding/base64"
-	"flag"
+	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -13,13 +13,14 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"thebackendcompany/app/web/emailleads"
+	"thebackendcompany/pkg/config"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 
-	"thebackendcompany/app/core/events"
-	"thebackendcompany/pkg/config"
+	coreleads "thebackendcompany/app/core/emailleads"
 
 	"github.com/rs/zerolog/log"
 
@@ -28,11 +29,6 @@ import (
 
 func RunMigrations(db *sqlx.DB) {
 	log.Info().Msg("running migrations")
-
-	repo := events.NewEventRepo(db)
-	if err := repo.Migrate(context.Background()); err != nil {
-		log.Fatal().Err(err).Msg("failed to migrate events")
-	}
 }
 
 var (
@@ -52,8 +48,8 @@ func main() {
 	env := os.Getenv("ENVIRONMENT")
 	env = strings.ToLower(env)
 
-	runMigrateFlag := flag.Bool("migrate", false, "run migrations")
-	flag.Parse()
+	// runMigrateFlag := flag.Bool("migrate", false, "run migrations")
+	// flag.Parse()
 
 	if env == "" {
 		env = "local"
@@ -61,19 +57,14 @@ func main() {
 
 	cfg := config.BuildAppConfig(env)
 
-	db, err := config.ConnectDB("sqlite3", "sink.db", "sink.db")
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to connect to db")
-	}
+	// db, err := config.ConnectDB("sqlite3", "sink.db", "sink.db")
+	// if err != nil {
+	// 	log.Fatal().Err(err).Msg("failed to connect to db")
+	// }
 
-	if *runMigrateFlag {
-		RunMigrations(db.GetDB())
-	}
-
-	sessionKey := os.Getenv("SESSION_SECRET")
-	if sessionKey == "" {
-		sessionKey = generateToken(64)
-	}
+	// if *runMigrateFlag {
+	// 	RunMigrations(db.GetDB())
+	// }
 
 	port := os.Getenv("APP_PORT")
 	if port == "" {
@@ -92,14 +83,52 @@ func main() {
 
 	r.StaticFS("/_next", http.FS(distFS))
 
+	sessionKey := os.Getenv("SESSION_SECRET")
+	if sessionKey == "" {
+		sessionKey = generateToken(64)
+	}
+
+	emailLeadsSvc := coreleads.NewEmailLeadsSheets(
+		[]byte(cfg.GoogleCreds),
+		cfg.EmailLeadsDbName,
+	)
+
 	store := cookie.NewStore([]byte(sessionKey))
+	shouldSecure := true
+
+	if env == "local" {
+		shouldSecure = false
+	}
+
+	store.Options(sessions.Options{
+		HttpOnly: true,
+		Secure:   shouldSecure,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   6000,
+		Domain:   cfg.DomainName,
+	})
+
 	r.Use(sessions.Sessions("thebackendcompany", store))
 
 	r.GET("/", func(ctx *gin.Context) {
 		session := sessions.Default(ctx)
-		csrfToken := generateToken(32)
 
-		session.Set("csrfToken", csrfToken)
+		maskedToken := session.Get("csrfToken")
+		fmt.Println("dsfdsfdsfsdf ", maskedToken)
+
+		var csrfToken string
+		if maskedToken == nil {
+			csrfToken = generateToken(32)
+
+			session.Set("csrfToken", csrfToken)
+			if err := session.Save(); err != nil {
+				fmt.Println("session save error ", err)
+			}
+		} else if _t, ok := maskedToken.(string); ok {
+			csrfToken = _t
+		} else {
+			log.Error().Msg("something went wrong trying to set csrf token. using blank")
+		}
 
 		ctx.HTML(http.StatusOK, "index.html", gin.H{
 			"csrf_token": csrfToken,
@@ -122,34 +151,11 @@ func main() {
 		)
 	})
 
-	mq, err := events.NewKafkaEventProducer(
-		&events.KafkaConfig{
-			Servers:      cfg.UpstashURL,
-			Topic:        "events-hook", // take from config
-			SaslUserName: cfg.UpstashUserName,
-			SaslPassword: cfg.UpstashPassword,
-		},
-	)
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to connect to upstash kafka")
-	}
-
-	eventSvc := events.NewEventService(
-		events.NewEventRepo(db.GetDB()),
-		mq,
-	)
-
-	r.POST("/tbc/sendmail", func(ctx *gin.Context) {
-		_ = eventSvc
-
-		ctx.JSON(http.StatusOK, `{"success": true}`)
-	})
-
 	r.GET("/tbc/ping", func(c *gin.Context) {
 		c.String(http.StatusOK, "pong")
 	})
 
-	// r.POST("/dankfa/events/payload", eventshandler.HandleEventsCreate(eventSvc))
+	r.POST("/tbc/emails/leads", emailleads.NewEmailLeadsHandler(emailLeadsSvc).HandlerFunc)
 
 	srv := &http.Server{
 		Addr:    port,

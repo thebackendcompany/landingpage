@@ -26,5 +26,4 @@ COPY --from=builder /src/server /opt/app/server
 COPY --from=builder /src/config/app.env /opt/app/config/app.env
 COPY --from=builder /src/config/ijnrge.env.enc /opt/app/config/ijnrge.env.enc
 
-EXPOSE 8080
-CMD ["/opt/app/server"]
+ENTRYPOINT ["/opt/app/server"]

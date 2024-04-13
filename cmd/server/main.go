@@ -38,6 +38,9 @@ var (
 	//go:embed static/favicon.ico
 	//go:embed all:static/_next
 	nextFs embed.FS
+
+	//go:embed all:static/images
+	imageFs embed.FS
 )
 
 const (
@@ -71,6 +74,11 @@ func main() {
 		port = ":8080"
 	}
 
+	distImgFS, err := fs.Sub(imageFs, "static/images")
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to load static images")
+	}
+
 	distFS, err := fs.Sub(nextFs, "static/_next")
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to load static templates")
@@ -82,6 +90,7 @@ func main() {
 	r.SetHTMLTemplate(baseLayout)
 
 	r.StaticFS("/_next", http.FS(distFS))
+	r.StaticFS("/images", http.FS(distImgFS))
 
 	sessionKey := os.Getenv("SESSION_SECRET")
 	if sessionKey == "" {
